@@ -549,9 +549,9 @@ if __name__ == "__main__":  # pragma: no cover
     import os
 
     # Minimal environment-driven client setup
-    _api_key = os.getenv("AZURE_OPENAI_API_KEY", "YOUR-KEY")
-    _endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://YOUR-RESOURCE.openai.azure.com/")
-    _api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+    _api_key = os.getenv("OPENAI_API_KEY")
+    _endpoint = "https://weez-openai-resource.openai.azure.com/"
+    _api_version = "2024-12-01-preview"
     client = AzureOpenAI(api_key=_api_key, azure_endpoint=_endpoint, api_version=_api_version)
 
     initialize_brain(client, chat_deployment=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o"))
