@@ -840,7 +840,7 @@ def health_check() -> Dict[str, Any]:
     try:
         # Check if required modules are available
         from utils.openai_client import get_embedding, answer_query_rag
-        from search import search_documents, search_by_file_id
+        from .search import search_documents, search_by_file_id
         
         health_status["dependencies"] = {
             "embedding": "available",
