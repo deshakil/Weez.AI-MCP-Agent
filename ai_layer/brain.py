@@ -253,29 +253,50 @@ class ReActBrain:
         return messages
 
     def _system_prompt(self, intent: Dict[str, Any], embedding: List[float]) -> str:
-        """Generate system prompt with context."""
-        # Keep short; models perform better w/ concise instructions.
-        prompt = (
-            "You are Weezy MCP's enterprise AI reasoning agent. "
-            "Use the available function tools to gather info (search, summarize, rag) before answering. "
-            "Think step-by-step: decide if you need to call a tool; if so, return a tool call. "
-            "After tools return, synthesize a clear answer citing the tool results (do not hallucinate). "
-            "Be helpful, accurate, and concise in your responses."
-        )
+     """Generate system prompt with context and proactive search guidance."""
+     prompt = (
+        "You are Weezy MCP's enterprise AI reasoning agent with access to user documents. "
         
-        # Add lightweight context injection
-        if intent:
-            prompt += f"\n\nIntent context: action={intent.get('action')}, query={intent.get('query_text')}"
-            if intent.get('platform'):
-                prompt += f", platform={intent.get('platform')}"
-            if intent.get('mime_type'):
-                prompt += f", mime_type={intent.get('mime_type')}"
+        "CRITICAL STRATEGY:\n"
+        "1. When users ask about 'their content' (my project, our meeting, my documents, AI project, etc.), "
+        "   IMMEDIATELY search for that topic using the search tool\n"
+        "2. If the initial search finds results, proceed with the requested action (summarize/analyze)\n" 
+        "3. If search returns limited results, try broader search terms before asking for clarification\n"
+        "4. Only ask for clarification as a last resort when search completely fails\n"
         
-        if embedding:
-            prompt += f"\n\nEmbedding available (length: {len(embedding)}) for semantic search."
+        "Available tools:\n"
+        "- search: Find documents by content/topic (use this first for user's own content)\n"
+        "- summarize: Create summaries of found documents\n" 
+        "- rag: Answer specific questions about document content\n"
         
-        prompt += "\n\nReturn responses in markdown format when appropriate."
-        return prompt
+        "Process:\n"
+        "1. If user mentions topics like 'AI project', 'meeting notes', 'design docs' → search immediately\n"
+        "2. Use search results to fulfill summarization or Q&A requests\n"
+        "3. Provide comprehensive responses based on found documents\n"
+        "4. If no documents found, suggest alternative search terms or ask for more specifics\n"
+        
+        "Be proactive, helpful, and assume the user has relevant documents stored."
+    )
+    
+    # Add context from intent
+     if intent:
+        action = intent.get('action', 'search')
+        query_text = intent.get('query_text', '')
+        
+        prompt += f"\n\nCurrent request: {action} - '{query_text}'"
+        
+        if intent.get('platforms'):
+            prompt += f"\nPlatforms: {', '.join(intent['platforms'])}"
+        if intent.get('file_types'):
+            prompt += f"\nFile types: {', '.join(intent['file_types'])}"
+        if intent.get('summary_type'):
+            prompt += f"\nSummary type: {intent['summary_type']}"
+    
+     if embedding:
+        prompt += f"\n\nEmbedding ready for semantic search (length: {len(embedding)})"
+    
+     prompt += "\n\nReturn responses in clear, well-formatted markdown."
+     return prompt
 
     def _store_conversation(self, user_id: str, conversation_id: str, user_query: str, agent_response: str) -> None:
         """Store conversation in Cosmos DB with proper conversation threading."""
