@@ -1507,22 +1507,99 @@ def auth_google_callback():
     try:
         user_email = session.get('user_email')
         if not user_email:
-            return jsonify({'error': 'Session expired'}), 400
+            return create_callback_response(False, 'google', 'Session expired', None)
         
         token = google_drive.get_access_token(request.url)
         
         # Save token
         if save_user_platform_token(user_email, 'google_drive', token):
-            return jsonify({
-                'message': 'Google Drive connected successfully',
-                'user_email': user_email,
-                'platform': 'google_drive'
-            })
+            return create_callback_response(
+                True, 
+                'google', 
+                'Google Drive connected successfully',
+                user_email
+            )
         else:
-            return jsonify({'error': 'Failed to save token'}), 500
+            return create_callback_response(False, 'google', 'Failed to save token', None)
             
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return create_callback_response(False, 'google', str(e), None)
+
+def create_callback_response(success, platform, message, user_email):
+    """Create HTML response that communicates with parent window"""
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Platform Connection</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                margin: 0;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            }}
+            .container {{
+                text-align: center;
+                background: white;
+                padding: 2rem;
+                border-radius: 10px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                max-width: 400px;
+            }}
+            .success {{ color: #10b981; }}
+            .error {{ color: #ef4444; }}
+            .spinner {{
+                border: 3px solid #f3f4f6;
+                border-top: 3px solid #667eea;
+                border-radius: 50%;
+                width: 30px;
+                height: 30px;
+                animation: spin 1s linear infinite;
+                margin: 20px auto;
+            }}
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="spinner"></div>
+            <h2 class="{'success' if success else 'error'}">
+                {'✓ Success!' if success else '✗ Error'}
+            </h2>
+            <p>{message}</p>
+            <p><small>This window will close automatically...</small></p>
+        </div>
+        
+        <script>
+            // Send message to parent window
+            if (window.opener) {{
+                window.opener.postMessage({{
+                    type: 'PLATFORM_AUTH_RESULT',
+                    platform: '{platform}',
+                    success: {str(success).lower()},
+                    message: '{message}',
+                    user_email: '{user_email or ""}',
+                    {'error: "' + message + '"' if not success else ''}
+                }}, 'https://www.weez.online'); // Replace with your frontend domain
+            }}
+            
+            // Close window after 3 seconds
+            setTimeout(() => {{
+                window.close();
+            }}, 3000);
+        </script>
+    </body>
+    </html>
+    """
+    
+    return html_content, 200, {'Content-Type': 'text/html'}
 
 @app.route('/sync/google')
 def sync_google():
