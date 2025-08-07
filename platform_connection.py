@@ -1507,7 +1507,7 @@ def auth_google_callback():
     try:
         user_email = session.get('user_email')
         if not user_email:
-            return create_callback_response(False, 'google', 'Session expired', None)
+            return create_callback_response(False, 'google', 'Session expired. Please try connecting again.', None, 'Session expired')
         
         token = google_drive.get_access_token(request.url)
         
@@ -1516,50 +1516,89 @@ def auth_google_callback():
             return create_callback_response(
                 True, 
                 'google', 
-                'Google Drive connected successfully',
+                'Google Drive has been successfully connected to Weez AI. Your files will now be accessible for search and analysis.',
                 user_email
             )
         else:
-            return create_callback_response(False, 'google', 'Failed to save token', None)
+            return create_callback_response(False, 'google', 'Failed to save authentication token. Please try again.', user_email, 'Token save failed')
             
     except Exception as e:
-        return create_callback_response(False, 'google', str(e), None)
+        print(f"Google OAuth callback error: {e}")
+        return create_callback_response(False, 'google', f'Authentication failed: {str(e)}', None, str(e))
 
-def create_callback_response(success, platform, message, user_email):
+
+def create_callback_response(success, platform, message, user_email=None, error=None):
     """Create HTML response that communicates with parent window"""
+    
+    # Map backend platform names to frontend platform IDs
+    platform_mapping = {
+        'google': 'google-drive',
+        'microsoft': 'onedrive', 
+        'dropbox': 'dropbox',
+        'notion': 'notion',
+        'slack': 'slack'
+    }
+    
+    frontend_platform_id = platform_mapping.get(platform, platform)
+    
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Platform Connection</title>
+        <title>Platform Connection - {"Success" if success else "Error"}</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body {{
-                font-family: Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 display: flex;
                 justify-content: center;
                 align-items: center;
                 min-height: 100vh;
                 margin: 0;
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: #333;
             }}
             .container {{
                 text-align: center;
                 background: white;
-                padding: 2rem;
-                border-radius: 10px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-                max-width: 400px;
+                padding: 3rem 2rem;
+                border-radius: 16px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                max-width: 420px;
+                width: 90%;
             }}
-            .success {{ color: #10b981; }}
-            .error {{ color: #ef4444; }}
+            .icon {{
+                font-size: 4rem;
+                margin-bottom: 1rem;
+            }}
+            .success-icon {{ color: #10b981; }}
+            .error-icon {{ color: #ef4444; }}
+            .title {{
+                font-size: 1.5rem;
+                font-weight: 600;
+                margin-bottom: 0.5rem;
+            }}
+            .success-title {{ color: #10b981; }}
+            .error-title {{ color: #ef4444; }}
+            .message {{
+                color: #6b7280;
+                margin-bottom: 1.5rem;
+                line-height: 1.5;
+            }}
             .spinner {{
                 border: 3px solid #f3f4f6;
                 border-top: 3px solid #667eea;
                 border-radius: 50%;
-                width: 30px;
-                height: 30px;
+                width: 32px;
+                height: 32px;
                 animation: spin 1s linear infinite;
-                margin: 20px auto;
+                margin: 1rem auto;
+            }}
+            .closing-text {{
+                color: #9ca3af;
+                font-size: 0.875rem;
+                margin-top: 1rem;
             }}
             @keyframes spin {{
                 0% {{ transform: rotate(0deg); }}
@@ -1569,37 +1608,74 @@ def create_callback_response(success, platform, message, user_email):
     </head>
     <body>
         <div class="container">
-            <div class="spinner"></div>
-            <h2 class="{'success' if success else 'error'}">
-                {'✓ Success!' if success else '✗ Error'}
+            <div class="icon {'success-icon' if success else 'error-icon'}">
+                {'✅' if success else '❌'}
+            </div>
+            <h2 class="title {'success-title' if success else 'error-title'}">
+                {'Connection Successful!' if success else 'Connection Failed'}
             </h2>
-            <p>{message}</p>
-            <p><small>This window will close automatically...</small></p>
+            <p class="message">{message}</p>
+            <div class="spinner"></div>
+            <p class="closing-text">This window will close automatically...</p>
         </div>
         
         <script>
-            // Send message to parent window
-            if (window.opener) {{
-                window.opener.postMessage({{
+            console.log('Callback page loaded with success:', {str(success).lower()});
+            
+            function sendMessageToParent() {{
+                const messageData = {{
                     type: 'PLATFORM_AUTH_RESULT',
                     platform: '{platform}',
+                    platformId: '{frontend_platform_id}',
                     success: {str(success).lower()},
-                    message: '{message}',
+                    message: `{message}`,
                     user_email: '{user_email or ""}',
-                    {'error: "' + message + '"' if not success else ''}
-                }}, 'https://www.weez.online'); // Replace with your frontend domain
+                    timestamp: new Date().toISOString()
+                }};
+                
+                if (!{str(success).lower()}) {{
+                    messageData.error = `{error or message}`;
+                }}
+                
+                console.log('Sending message to parent:', messageData);
+                
+                // Send to parent window (main app)
+                if (window.opener && !window.opener.closed) {{
+                    window.opener.postMessage(messageData, '*');
+                    console.log('Message sent to opener');
+                }} else {{
+                    console.log('No opener found or opener is closed');
+                }}
+                
+                // Also try sending to parent frame (in case it's in an iframe)
+                if (window.parent && window.parent !== window) {{
+                    window.parent.postMessage(messageData, '*');
+                    console.log('Message sent to parent frame');
+                }}
             }}
+            
+            // Send message immediately
+            sendMessageToParent();
+            
+            // Send message again after a short delay to ensure parent is ready
+            setTimeout(sendMessageToParent, 500);
+            setTimeout(sendMessageToParent, 1000);
             
             // Close window after 3 seconds
             setTimeout(() => {{
-                window.close();
+                console.log('Closing window');
+                try {{
+                    window.close();
+                }} catch (e) {{
+                    console.log('Could not close window:', e);
+                }}
             }}, 3000);
         </script>
     </body>
     </html>
     """
     
-    return html_content, 200, {'Content-Type': 'text/html'}
+    return html_content, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 @app.route('/sync/google')
 def sync_google():
@@ -1644,22 +1720,24 @@ def auth_microsoft_callback():
     try:
         user_email = session.get('user_email')
         if not user_email:
-            return jsonify({'error': 'Session expired'}), 400
+            return create_callback_response(False, 'microsoft', 'Session expired. Please try connecting again.', None, 'Session expired')
         
         token = onedrive.get_access_token(request.url)
         
         # Save token
         if save_user_platform_token(user_email, 'onedrive', token):
-            return jsonify({
-                'message': 'Microsoft OneDrive connected successfully',
-                'user_email': user_email,
-                'platform': 'onedrive'
-            })
+            return create_callback_response(
+                True, 
+                'microsoft', 
+                'Microsoft OneDrive has been successfully connected to Weez AI. Your files will now be accessible for search and analysis.',
+                user_email
+            )
         else:
-            return jsonify({'error': 'Failed to save token'}), 500
+            return create_callback_response(False, 'microsoft', 'Failed to save authentication token. Please try again.', user_email, 'Token save failed')
             
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Microsoft OAuth callback error: {e}")
+        return create_callback_response(False, 'microsoft', f'Authentication failed: {str(e)}', None, str(e))
 
 @app.route('/sync/microsoft')
 def sync_microsoft():
@@ -1703,22 +1781,25 @@ def auth_dropbox_callback():
         state = request.args.get('state')
         
         if not code or not state:
-            return jsonify({'error': 'Missing authorization code or state'}), 400
+            return create_callback_response(False, 'dropbox', 'Missing authorization code or state parameter.', None, 'Missing parameters')
         
         token_data, user_email = dropbox.get_access_token(code, state)
         
         # Save token
         if save_user_platform_token(user_email, 'dropbox', token_data):
-            return jsonify({
-                'message': 'Dropbox connected successfully',
-                'user_email': user_email,
-                'platform': 'dropbox'
-            })
+            return create_callback_response(
+                True, 
+                'dropbox', 
+                'Dropbox has been successfully connected to Weez AI. Your files will now be accessible for search and analysis.',
+                user_email
+            )
         else:
-            return jsonify({'error': 'Failed to save token'}), 500
+            return create_callback_response(False, 'dropbox', 'Failed to save authentication token. Please try again.', user_email, 'Token save failed')
             
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Dropbox OAuth callback error: {e}")
+        return create_callback_response(False, 'dropbox', f'Authentication failed: {str(e)}', None, str(e))
+        
 
 @app.route('/sync/dropbox')
 def sync_dropbox():
@@ -1762,22 +1843,24 @@ def auth_notion_callback():
         state = request.args.get('state')
         
         if not code or not state:
-            return jsonify({'error': 'Missing authorization code or state'}), 400
+            return create_callback_response(False, 'notion', 'Missing authorization code or state parameter.', None, 'Missing parameters')
         
         token_data, user_email = notion.get_access_token(code, state)
         
         # Save token
         if save_user_platform_token(user_email, 'notion', token_data):
-            return jsonify({
-                'message': 'Notion connected successfully',
-                'user_email': user_email,
-                'platform': 'notion'
-            })
+            return create_callback_response(
+                True, 
+                'notion', 
+                'Notion has been successfully connected to Weez AI. Your workspace content will now be accessible for search and analysis.',
+                user_email
+            )
         else:
-            return jsonify({'error': 'Failed to save token'}), 500
+            return create_callback_response(False, 'notion', 'Failed to save authentication token. Please try again.', user_email, 'Token save failed')
             
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Notion OAuth callback error: {e}")
+        return create_callback_response(False, 'notion', f'Authentication failed: {str(e)}', None, str(e))
 
 @app.route('/sync/notion')
 def sync_notion():
@@ -1908,25 +1991,27 @@ def auth_slack_callback():
         error = request.args.get('error')
         
         if error:
-            return jsonify({'error': f'Slack OAuth error: {error}'}), 400
+            return create_callback_response(False, 'slack', f'Slack authorization was denied: {error}', None, error)
         
         if not code or not state:
-            return jsonify({'error': 'Missing authorization code or state'}), 400
+            return create_callback_response(False, 'slack', 'Missing authorization code or state parameter.', None, 'Missing parameters')
         
         token_data, user_email = slack.get_access_token(code, state)
         
         if save_user_platform_token(user_email, 'slack', token_data):
-            return jsonify({
-                'message': 'Slack connected successfully',
-                'user_email': user_email,
-                'platform': 'slack',
-                'team_name': token_data.get('team', {}).get('name', 'Unknown team')
-            })
+            team_name = token_data.get('team', {}).get('name', 'your team')
+            return create_callback_response(
+                True, 
+                'slack', 
+                f'Slack workspace "{team_name}" has been successfully connected to Weez AI. Your team conversations and files will now be accessible for search and analysis.',
+                user_email
+            )
         else:
-            return jsonify({'error': 'Failed to save token'}), 500
+            return create_callback_response(False, 'slack', 'Failed to save authentication token. Please try again.', user_email, 'Token save failed')
             
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Slack OAuth callback error: {e}")
+        return create_callback_response(False, 'slack', f'Authentication failed: {str(e)}', None, str(e))
 
 @app.route('/sync/slack')
 def sync_slack():
