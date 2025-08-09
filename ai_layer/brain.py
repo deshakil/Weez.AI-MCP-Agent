@@ -253,50 +253,29 @@ class ReActBrain:
         return messages
 
     def _system_prompt(self, intent: Dict[str, Any], embedding: List[float]) -> str:
-     """Generate system prompt with context and proactive search guidance."""
-     prompt = (
-        "You are Weezy MCP's enterprise AI reasoning agent with access to user documents. "
+        """Generate system prompt with context."""
+        # Keep short; models perform better w/ concise instructions.
+        prompt = (
+            "You are Weezy MCP's enterprise AI reasoning agent. "
+            "Use the available function tools to gather info (search, summarize, rag) before answering. "
+            "Think step-by-step: decide if you need to call a tool; if so, return a tool call. "
+            "After tools return, synthesize a clear answer citing the tool results (do not hallucinate). "
+            "Be helpful, accurate, and concise in your responses."
+        )
         
-        "CRITICAL STRATEGY:\n"
-        "1. When users ask about 'their content' (my project, our meeting, my documents, AI project, etc.), "
-        "   IMMEDIATELY search for that topic using the search tool\n"
-        "2. If the initial search finds results, proceed with the requested action (summarize/analyze)\n" 
-        "3. If search returns limited results, try broader search terms before asking for clarification\n"
-        "4. Only ask for clarification as a last resort when search completely fails\n"
+        # Add lightweight context injection
+        if intent:
+            prompt += f"\n\nIntent context: action={intent.get('action')}, query={intent.get('query_text')}"
+            if intent.get('platform'):
+                prompt += f", platform={intent.get('platform')}"
+            if intent.get('mime_type'):
+                prompt += f", mime_type={intent.get('mime_type')}"
         
-        "Available tools:\n"
-        "- search: Find documents by content/topic (use this first for user's own content)\n"
-        "- summarize: Create summaries of found documents\n" 
-        "- rag: Answer specific questions about document content\n"
+        if embedding:
+            prompt += f"\n\nEmbedding available (length: {len(embedding)}) for semantic search."
         
-        "Process:\n"
-        "1. If user mentions topics like 'AI project', 'meeting notes', 'design docs' → search immediately\n"
-        "2. Use search results to fulfill summarization or Q&A requests\n"
-        "3. Provide comprehensive responses based on found documents\n"
-        "4. If no documents found, suggest alternative search terms or ask for more specifics\n"
-        
-        "Be proactive, helpful, and assume the user has relevant documents stored."
-    )
-    
-    # Add context from intent
-     if intent:
-        action = intent.get('action', 'search')
-        query_text = intent.get('query_text', '')
-        
-        prompt += f"\n\nCurrent request: {action} - '{query_text}'"
-        
-        if intent.get('platforms'):
-            prompt += f"\nPlatforms: {', '.join(intent['platforms'])}"
-        if intent.get('file_types'):
-            prompt += f"\nFile types: {', '.join(intent['file_types'])}"
-        if intent.get('summary_type'):
-            prompt += f"\nSummary type: {intent['summary_type']}"
-    
-     if embedding:
-        prompt += f"\n\nEmbedding ready for semantic search (length: {len(embedding)})"
-    
-     prompt += "\n\nReturn responses in clear, well-formatted markdown."
-     return prompt
+        prompt += "\n\nReturn responses in markdown format when appropriate."
+        return prompt
 
     def _store_conversation(self, user_id: str, conversation_id: str, user_query: str, agent_response: str) -> None:
         """Store conversation in Cosmos DB with proper conversation threading."""
@@ -407,80 +386,84 @@ class ReActBrain:
     # ------------------------------------------------------------------
     # Tool dispatch + error safety
     def _dispatch_tool(
-        self, 
-        user_id: str, 
-        conversation_id: str,
-        tool_name: Optional[str], 
-        args: Dict[str, Any], 
-        intent: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute a tool function with error handling."""
-        if not tool_name:
-            return {"success": False, "error": "Missing tool name."}
+    self, 
+    user_id: str, 
+    conversation_id: str,
+    tool_name: Optional[str], 
+    args: Dict[str, Any], 
+    intent: Dict[str, Any]
+) -> Dict[str, Any]:
+     """Execute a tool function with error handling."""
+     if not tool_name:
+        return {"success": False, "error": "Missing tool name."}
+    
+     fn = self.tool_mapping.get(tool_name)
+     if not fn:
+        return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+    # CRITICAL FIX: Always override user_id from the authenticated user
+    # The model may hallucinate or provide incorrect user_id values
+     args["user_id"] = user_id  # Force override, don't check if it exists
+    
+    # Log the override for debugging
+     if "user_id" in args and args["user_id"] != user_id:
+        logger.warning("Model provided incorrect user_id, overriding with authenticated user: %s", user_id)
+
+    # Augment args with intent defaults if missing
+     if "platform" not in args and intent.get("platform") is not None:
+        args["platform"] = intent["platform"]
+     if "mime_type" not in args and intent.get("mime_type") is not None:
+        args["mime_type"] = intent["mime_type"]
+
+    # Tool-specific argument handling
+     if tool_name == "summarize" and "summary_type" not in args and intent.get("summary_type"):
+        args["summary_type"] = intent["summary_type"]
+
+    # Ensure query_text is provided
+     if "query_text" not in args:
+        args["query_text"] = intent.get("query_text") or ""
+
+     try:
+        # Call the tool function
+        result = fn(args)
+        if result is None:
+            result = {"message": "No results found."}
         
-        fn = self.tool_mapping.get(tool_name)
-        if not fn:
-            return {"success": False, "error": f"Unknown tool: {tool_name}"}
-
-        # Ensure user_id is always provided to tools
-        if "user_id" not in args:
-            args["user_id"] = user_id
-
-        # Augment args with intent defaults if missing
-        if "platform" not in args and intent.get("platform") is not None:
-            args["platform"] = intent["platform"]
-        if "mime_type" not in args and intent.get("mime_type") is not None:
-            args["mime_type"] = intent["mime_type"]
-
-        # Tool-specific argument handling
-        if tool_name == "summarize" and "summary_type" not in args and intent.get("summary_type"):
-            args["summary_type"] = intent["summary_type"]
-
-        # Ensure query_text is provided
-        if "query_text" not in args:
-            args["query_text"] = intent.get("query_text") or ""
-
+        wrapped_result = {
+            "success": True, 
+            "function": tool_name, 
+            "result": result
+        }
+        
+        # Store tool result as a separate conversation entry for context
+        self._store_tool_result(user_id, conversation_id, tool_name, result)
+        
+        return wrapped_result
+        
+     except TypeError as te:
+        logger.warning("Tool %s arg mismatch: %s; retrying with minimal args.", tool_name, te)
         try:
-            # Call the tool function
-            result = fn(args)
-            if result is None:
-                result = {"message": "No results found."}
-            
+            # Retry with minimal args - ENSURE user_id is correct here too
+            minimal_args = {
+                "query_text": args.get("query_text", ""),
+                "user_id": user_id  # Use authenticated user_id, not from args
+            }
+            result = fn(minimal_args)
             wrapped_result = {
                 "success": True, 
                 "function": tool_name, 
                 "result": result
             }
-            
-            # Store tool result as a separate conversation entry for context
             self._store_tool_result(user_id, conversation_id, tool_name, result)
-            
             return wrapped_result
-            
-        except TypeError as te:
-            logger.warning("Tool %s arg mismatch: %s; retrying with minimal args.", tool_name, te)
-            try:
-                # Retry with minimal args
-                minimal_args = {
-                    "query_text": args.get("query_text", ""),
-                    "user_id": user_id
-                }
-                result = fn(minimal_args)
-                wrapped_result = {
-                    "success": True, 
-                    "function": tool_name, 
-                    "result": result
-                }
-                self._store_tool_result(user_id, conversation_id, tool_name, result)
-                return wrapped_result
-            except Exception as e:
-                logger.error("Tool %s retry failed: %s", tool_name, e)
-                logger.debug(traceback.format_exc())
-                return {"success": False, "function": tool_name, "error": str(e)}
         except Exception as e:
-            logger.error("Tool %s execution error: %s", tool_name, e)
+            logger.error("Tool %s retry failed: %s", tool_name, e)
             logger.debug(traceback.format_exc())
             return {"success": False, "function": tool_name, "error": str(e)}
+     except Exception as e:
+        logger.error("Tool %s execution error: %s", tool_name, e)
+        logger.debug(traceback.format_exc())
+        return {"success": False, "function": tool_name, "error": str(e)}
 
     def _store_tool_result(self, user_id: str, conversation_id: str, tool_name: str, result: Any) -> None:
         """Store tool execution result for context in future conversations."""
