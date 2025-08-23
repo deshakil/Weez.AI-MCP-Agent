@@ -77,6 +77,9 @@ class CosmosVectorClient:
         """
         conditions = []
         parameters = []
+
+        if not filters.get('user_id'):
+         raise ValueError("user_id is required and cannot be empty")
         
         # User ID filter (required for partition key efficiency)
         if 'user_id' in filters and filters['user_id']:
@@ -143,6 +146,7 @@ class CosmosVectorClient:
         """
         try:
             # Validate inputs
+            logger.info(f"Vector search for user_id: {filters.get('user_id')}")
             if not embedding or not isinstance(embedding, list):
                 raise ValueError("Embedding must be a non-empty list of floats")
             
@@ -154,6 +158,7 @@ class CosmosVectorClient:
             
             # Build filter conditions
             conditions, parameters = self._build_filter_conditions(filters)
+            logger.info(f"Filter conditions: {conditions}, Parameters: {parameters}")
             
             # Construct the SQL query with vector search
             where_clause = " AND ".join(conditions) if conditions else "1=1"
@@ -182,13 +187,14 @@ class CosmosVectorClient:
             parameters.append({"name": "@top_k", "value": top_k})
             
             logger.info(f"Executing vector search query with {len(parameters)} parameters")
+            logger.info(parameters)
             logger.debug(f"Query: {query}")
             
             # Execute query with vector search enabled
             results = list(self.container.query_items(
                 query=query,
                 parameters=parameters,
-                enable_cross_partition_query=True,
+                partition_key=filters.get('user_id'),
                 max_item_count=top_k
             ))
             
