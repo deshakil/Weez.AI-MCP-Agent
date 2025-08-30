@@ -132,44 +132,90 @@ class ReActBrain:
 
     # ------------------------------------------------------------------
     # Public API
+    #def reason_and_act(self, user_id: str, user_input: str, conversation_id: Optional[str] = None) -> str:
+    #    """Main entry point. Returns final user-facing response string."""
+    #    logger.info("ReActBrain.start user=%s input=%s conversation_id=%s", user_id, user_input, conversation_id)
+
+    #    # Generate conversation_id if not provided
+    #    if not conversation_id:
+    #        conversation_id = str(uuid.uuid4())
+    #        logger.info("Generated new conversation_id: %s", conversation_id)
+
+    #    # Parse intent --------------------------------------------------
+    #    intent = self._safe_parse_intent(user_input)
+
+    #    # Clarification gate -------------------------------------------
+    #    if intent.get("needs_clarification"):
+    #        clarification_msg = self._clarification_message(intent)
+    #        # Store clarification request
+    #        self._store_conversation(user_id, conversation_id, user_input, clarification_msg)
+    #        return clarification_msg
+
+    #    # Generate embedding -----------------------------------
+    #    query_text = intent.get("query_text") or user_input
+    #    embedding = self._safe_get_embedding(query_text)
+
+    #    # Build context -------------------------------------------------
+    #    messages = self._build_conversation_messages(
+    #        user_id=user_id,
+    #        conversation_id=conversation_id,
+    #        user_input=user_input,
+    #        intent=intent,
+    #        embedding=embedding
+    #    )
+
+    #    # ReAct loop ----------------------------------------------------
+    #    reply = self._react_loop(user_id=user_id, conversation_id=conversation_id, messages=messages, intent=intent)
+        
+    #    # Store the complete conversation in memory
+    #    self._store_conversation(user_id, conversation_id, user_input, reply)
+        
+    #    return reply
+
+    # ALSO FIX: The main reason_and_act method
     def reason_and_act(self, user_id: str, user_input: str, conversation_id: Optional[str] = None) -> str:
         """Main entry point. Returns final user-facing response string."""
         logger.info("ReActBrain.start user=%s input=%s conversation_id=%s", user_id, user_input, conversation_id)
 
-        # Generate conversation_id if not provided
+        # CRITICAL CHANGE: Only generate new conversation_id if none provided
+        # This was causing context loss by creating new conversations
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
             logger.info("Generated new conversation_id: %s", conversation_id)
+            is_new_conversation = True
+        else:
+            logger.info("Using existing conversation_id: %s", conversation_id)
+            is_new_conversation = False
 
-        # Parse intent --------------------------------------------------
+        # Parse intent
         intent = self._safe_parse_intent(user_input)
 
-        # Clarification gate -------------------------------------------
+        # Clarification gate
         if intent.get("needs_clarification"):
             clarification_msg = self._clarification_message(intent)
             # Store clarification request
             self._store_conversation(user_id, conversation_id, user_input, clarification_msg)
             return clarification_msg
 
-        # Generate embedding -----------------------------------
+        # Generate embedding
         query_text = intent.get("query_text") or user_input
         embedding = self._safe_get_embedding(query_text)
 
-        # Build context -------------------------------------------------
+        # Build context - this will now properly include history for existing conversations
         messages = self._build_conversation_messages(
-            user_id=user_id, 
+            user_id=user_id,
             conversation_id=conversation_id,
-            user_input=user_input, 
-            intent=intent, 
+            user_input=user_input,
+            intent=intent,
             embedding=embedding
         )
 
-        # ReAct loop ----------------------------------------------------
+        # ReAct loop
         reply = self._react_loop(user_id=user_id, conversation_id=conversation_id, messages=messages, intent=intent)
-        
+
         # Store the complete conversation in memory
         self._store_conversation(user_id, conversation_id, user_input, reply)
-        
+
         return reply
 
     # ------------------------------------------------------------------
@@ -202,67 +248,126 @@ class ReActBrain:
             logger.debug(traceback.format_exc())
             return []
 
+    #def _build_conversation_messages(
+    #    self,
+    #    user_id: str,
+    #    conversation_id: str,
+    #    user_input: str,
+    #    intent: Dict[str, Any],
+    #    embedding: List[float]
+    #) -> List[Dict[str, Any]]:
+    #    """Build conversation messages including system prompt and conversation history."""
+    #    messages: List[Dict[str, Any]] = []
+        
+    #    # Add system prompt
+    #    messages.append({
+    #        "role": "system",
+    #        "content": self._system_prompt(intent=intent, embedding=embedding)
+    #    })
+        
+    #    # Get conversation history from Cosmos DB for this specific conversation
+    #    try:
+    #        history = self.memory_manager.get_conversation_history(
+    #            user_id=user_id,
+    #            conversation_id=conversation_id,
+    #            limit=self.conversation_history_limit
+    #        )
+    #
+    #        # Convert Cosmos DB history to chat format
+    #        # History comes back in chronological order (ascending)
+    #        for conversation in history:
+    #            # Add user message
+    #            messages.append({
+    #                "role": "user",
+    #                "content": conversation.get("user_query", "")
+    #            })
+                
+    #            # Add assistant response
+    #            messages.append({
+    #                "role": "assistant",
+    #                "content": conversation.get("agent_response", "")
+    #            })
+                
+    #    except Exception as e:
+    #        logger.error("Failed to retrieve conversation history: %s", e)
+    #        logger.debug(traceback.format_exc())
+    #        # Continue without history if retrieval fails
+        
+    #    # Add current user message
+    #    messages.append({"role": "user", "content": user_input})
+        
+    #    return messages
     def _build_conversation_messages(
-        self, 
-        user_id: str, 
-        conversation_id: str,
-        user_input: str, 
-        intent: Dict[str, Any], 
-        embedding: List[float]
+            self,
+            user_id: str,
+            conversation_id: str,
+            user_input: str,
+            intent: Dict[str, Any],
+            embedding: List[float]
     ) -> List[Dict[str, Any]]:
         """Build conversation messages including system prompt and conversation history."""
         messages: List[Dict[str, Any]] = []
-        
+
         # Add system prompt
         messages.append({
-            "role": "system", 
+            "role": "system",
             "content": self._system_prompt(intent=intent, embedding=embedding)
         })
-        
+
         # Get conversation history from Cosmos DB for this specific conversation
         try:
+            # CRITICAL FIX: Always attempt to get history for existing conversations
+            # The previous check was preventing history retrieval
             history = self.memory_manager.get_conversation_history(
-                user_id=user_id, 
+                user_id=user_id,
                 conversation_id=conversation_id,
                 limit=self.conversation_history_limit
             )
-            
+
+            logger.info(f"Retrieved {len(history)} messages from conversation {conversation_id}")
+
             # Convert Cosmos DB history to chat format
             # History comes back in chronological order (ascending)
             for conversation in history:
                 # Add user message
-                messages.append({
-                    "role": "user",
-                    "content": conversation.get("user_query", "")
-                })
-                
+                user_msg = conversation.get("user_query", "").strip()
+                if user_msg:
+                    messages.append({
+                        "role": "user",
+                        "content": user_msg
+                    })
+
                 # Add assistant response
-                messages.append({
-                    "role": "assistant",
-                    "content": conversation.get("agent_response", "")
-                })
-                
+                assistant_msg = conversation.get("agent_response", "").strip()
+                if assistant_msg:
+                    messages.append({
+                        "role": "assistant",
+                        "content": assistant_msg
+                    })
+
         except Exception as e:
             logger.error("Failed to retrieve conversation history: %s", e)
             logger.debug(traceback.format_exc())
             # Continue without history if retrieval fails
-        
+
         # Add current user message
         messages.append({"role": "user", "content": user_input})
-        
+
+        logger.info(f"Built conversation with {len(messages)} total messages")
         return messages
 
     def _system_prompt(self, intent: Dict[str, Any], embedding: List[float]) -> str:
         """Generate system prompt with context."""
-        # Keep short; models perform better w/ concise instructions.
         prompt = (
-            "You are Weezy MCP's enterprise AI reasoning agent. "
-            "Use the available function tools to gather info (search, summarize, rag) before answering. "
+            "You are Weez.AI MCP's enterprise AI reasoning agent. "
+            "You have access to the full conversation history above. "
+            "Use the available function tools to gather info (search, summarize, rag) when needed. "
+            "Always consider the conversation context and refer back to previous messages when relevant. "
             "Think step-by-step: decide if you need to call a tool; if so, return a tool call. "
             "After tools return, synthesize a clear answer citing the tool results (do not hallucinate). "
-            "Be helpful, accurate, and concise in your responses."
+            "Be helpful, accurate, and maintain conversational continuity."
         )
-        
+
         # Add lightweight context injection
         if intent:
             prompt += f"\n\nIntent context: action={intent.get('action')}, query={intent.get('query_text')}"
@@ -270,10 +375,10 @@ class ReActBrain:
                 prompt += f", platform={intent.get('platform')}"
             if intent.get('mime_type'):
                 prompt += f", mime_type={intent.get('mime_type')}"
-        
+
         if embedding:
             prompt += f"\n\nEmbedding available (length: {len(embedding)}) for semantic search."
-        
+
         prompt += "\n\nReturn responses in markdown format when appropriate."
         return prompt
 
